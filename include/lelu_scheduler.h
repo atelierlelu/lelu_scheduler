@@ -94,6 +94,10 @@ typedef struct {
     uint32_t         elapsed_time;               /**< Time elapsed since last execution */
     lelu_task_func_t handler;                    /**< Pointer to task function */
     uint32_t         total_ticks;                /**< Profiling: total ms spent in task */
+    uint32_t         run_count;                  /**< Profiling: number of task executions */
+    uint32_t         last_exec_time;             /**< Profiling: last execution time (ms) */
+    uint32_t         max_exec_time_100;          /**< Profiling: max exec time over last 100 runs */
+    uint32_t         run_count_since_max_reset;  /**< Counter for max reset (resets every 100) */
     char             name[LELU_TASK_NAME_LEN];   /**< Human-readable task name */
 } lelu_task_t;
 

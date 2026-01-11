@@ -147,6 +147,10 @@ lelu_status_t lelu_scheduler_add_task(const char* name,
     tasks[idx].elapsed_time = period;                /* Run immediately on first tick */
     tasks[idx].handler = handler;
     tasks[idx].total_ticks = 0;
+    tasks[idx].run_count = 0;
+    tasks[idx].last_exec_time = 0;
+    tasks[idx].max_exec_time_100 = 0;
+    tasks[idx].run_count_since_max_reset = 0;
     
     /* Copy task name (safely truncate if too long) */
     if (name != NULL)
@@ -282,8 +286,26 @@ bool lelu_scheduler_run(void)
             /* Reset elapsed time */
             tasks[i].elapsed_time = 0;
             
-            /* Update profiling: add execution time to total */
-            tasks[i].total_ticks += (total_ticks - time_before_task);
+            /* Calculate execution time for this run */
+            uint32_t exec_time = total_ticks - time_before_task;
+            
+            /* Update profiling statistics */
+            tasks[i].total_ticks += exec_time;
+            tasks[i].run_count++;
+            tasks[i].last_exec_time = exec_time;
+            
+            /* Track max over last 100 executions */
+            if (exec_time > tasks[i].max_exec_time_100)
+            {
+                tasks[i].max_exec_time_100 = exec_time;
+            }
+            tasks[i].run_count_since_max_reset++;
+            if (tasks[i].run_count_since_max_reset >= 100)
+            {
+                /* Reset max tracking every 100 executions */
+                tasks[i].run_count_since_max_reset = 0;
+                tasks[i].max_exec_time_100 = exec_time;  /* Start fresh with current */
+            }
             
             task_executed = true;
         }
@@ -316,6 +338,40 @@ void lelu_scheduler_clear_tick(void)
  * ========================================================================== */
 
 /**
+ * @brief  Format time value for display
+ * 
+ * Formats milliseconds into human-readable string:
+ * - < 10000ms: displays as "XXXXms"
+ * - < 60000ms (60s): displays as "XX.Xs"
+ * - >= 60000ms: displays as "Xm:XXs"
+ * 
+ * @param ms Time value in milliseconds
+ * @param buf Output buffer (must be at least 12 chars)
+ */
+static void format_time(uint32_t ms, char* buf)
+{
+    if (ms < 10000)
+    {
+        /* Display as milliseconds */
+        sprintf(buf, "%lums", (unsigned long)ms);
+    }
+    else if (ms < 60000)
+    {
+        /* Display as seconds with one decimal */
+        uint32_t secs = ms / 1000;
+        uint32_t tenths = (ms % 1000) / 100;
+        sprintf(buf, "%lu.%lus", (unsigned long)secs, (unsigned long)tenths);
+    }
+    else
+    {
+        /* Display as minutes and seconds */
+        uint32_t mins = ms / 60000;
+        uint32_t secs = (ms % 60000) / 1000;
+        sprintf(buf, "%lum%02lus", (unsigned long)mins, (unsigned long)secs);
+    }
+}
+
+/**
  * @brief  Get statistics for a specific task
  */
 void lelu_scheduler_get_stats(uint8_t task_id, lelu_task_stats_t* stats)
@@ -323,12 +379,18 @@ void lelu_scheduler_get_stats(uint8_t task_id, lelu_task_stats_t* stats)
     if ((task_id < task_count) && (stats != NULL))
     {
         stats->total_ticks = tasks[task_id].total_ticks;
-        stats->run_count = 0;  /* Reserved for future use */
+        stats->run_count = tasks[task_id].run_count;
     }
 }
 
 /**
  * @brief  Print statistics for all tasks via UART
+ * 
+ * Displays for each task:
+ * - Total time spent in task (formatted)
+ * - Average execution time per call
+ * - Maximum execution time over last 100 calls
+ * - Run count and status
  */
 void lelu_scheduler_print_stats(void)
 {
@@ -337,29 +399,46 @@ void lelu_scheduler_print_stats(void)
         return;
     }
     
-    /* Print header */
+    char time_buf[12];  /* Buffer for formatted time strings */
+    
+    /* Print header with formatted total uptime */
+    format_time(total_ticks, time_buf);
     memset(debug_msg, 0, sizeof(debug_msg));
-    sprintf(debug_msg, "\r\n[LELU] Task Statistics (total_ticks=%lu)\r\n",
-            (unsigned long)total_ticks);
+    sprintf(debug_msg, "\r\n[LELU] Task Statistics (uptime=%s)\r\n", time_buf);
     lelu_debug_print(debug_msg);
     
-    /* Print separator */
-    lelu_debug_print("----------------------------------------\r\n");
+    /* Print column headers */
+    lelu_debug_print("Task          | Total    | Avg   | Max100 | Runs   | Status\r\n");
+    lelu_debug_print("--------------+----------+-------+--------+--------+--------\r\n");
     
     /* Print each task */
     for (uint8_t i = 0; i < task_count; i++)
     {
+        /* Calculate average execution time */
+        uint32_t avg_time = 0;
+        if (tasks[i].run_count > 0)
+        {
+            avg_time = tasks[i].total_ticks / tasks[i].run_count;
+        }
+        
+        /* Format total time */
+        char total_buf[12];
+        format_time(tasks[i].total_ticks, total_buf);
+        
+        /* Print task line */
         memset(debug_msg, 0, sizeof(debug_msg));
-        sprintf(debug_msg, "  %s:\ttotal=%lums\tperiod=%lums\t%s\r\n",
+        sprintf(debug_msg, "%-13s | %8s | %3lums | %4lums | %6lu | %s\r\n",
                 tasks[i].name,
-                (unsigned long)tasks[i].total_ticks,
-                (unsigned long)tasks[i].period,
-                tasks[i].running ? "RUNNING" : "STOPPED");
+                total_buf,
+                (unsigned long)avg_time,
+                (unsigned long)tasks[i].max_exec_time_100,
+                (unsigned long)tasks[i].run_count,
+                tasks[i].running ? "RUN" : "STOP");
         lelu_debug_print(debug_msg);
     }
     
     /* Print separator */
-    lelu_debug_print("----------------------------------------\r\n");
+    lelu_debug_print("--------------+----------+-------+--------+--------+--------\r\n");
 }
 
 /**
