@@ -12,7 +12,7 @@
  * INCLUDES
  * ========================================================================== */
 
-#include "lelu_scheduler.h"
+#include "../include/lelu_scheduler.h"
 #include "main.h"           /* User's main.h - provides HAL types (UART_HandleTypeDef, etc.) */
 #include <string.h>
 #include <stdio.h>

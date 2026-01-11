@@ -11,7 +11,7 @@
  */
 
 #include "main.h"
-#include "lelu_scheduler.h"
+#include "../include/lelu_scheduler.h"
 #include <string.h>
 #include <stdio.h>
 
