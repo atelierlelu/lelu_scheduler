@@ -12,8 +12,11 @@
  * INCLUDES
  * ========================================================================== */
 
+/* IMPORTANT: main.h must be included FIRST to pick up user's configuration
+ * defines (LELU_MAX_TASKS, LELU_TICK_PERIOD_MS) before lelu_scheduler.h
+ * applies its defaults via #ifndef guards. */
+#include "main.h"           /* User's main.h - provides HAL types and scheduler config */
 #include "../include/lelu_scheduler.h"
-#include "main.h"           /* User's main.h - provides HAL types (UART_HandleTypeDef, etc.) */
 #include <string.h>
 #include <stdio.h>
 
