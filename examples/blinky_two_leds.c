@@ -7,7 +7,10 @@
  *          - LED1 (PA5): Fast blink at 250ms (2 Hz)
  *          - LED2 (PA6): Slow blink at 1000ms (0.5 Hz)
  * 
- * @note    This is example code - adapt GPIO pins and UART for your board.
+ *          Debug output is shown via UART. For USB CDC, see the CDC
+ *          print callback example in the README.
+ * 
+ * @note    This is example code - adapt GPIO pins and print callback for your board.
  */
 
 #include "main.h"
@@ -19,12 +22,22 @@
 
 UART_HandleTypeDef huart2;  /* For debug output */
 
+/* ============== Debug Print Callback ============== */
+
+/**
+ * @brief  Print callback for scheduler debug output via UART.
+ *         Replace this with a CDC or other implementation for your board.
+ * @param  msg  Null-terminated string to transmit
+ */
+void scheduler_uart_print(const char* msg)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+}
+
 /* ============== Task Functions ============== */
 
 /**
  * @brief Task: Blink LED1 (fast - every 250ms)
- * 
- * This task toggles LED1, creating a 2 Hz blink pattern (500ms full cycle).
  */
 void task_blink_led1(void)
 {
@@ -33,8 +46,6 @@ void task_blink_led1(void)
 
 /**
  * @brief Task: Blink LED2 (slow - every 1000ms)
- * 
- * This task toggles LED2, creating a 0.5 Hz blink pattern (2 second full cycle).
  */
 void task_blink_led2(void)
 {
@@ -44,77 +55,51 @@ void task_blink_led2(void)
 /* ============== HAL Tick Override ============== */
 
 /**
- * @brief Override HAL_IncTick to include scheduler timing
- * 
- * This function is called every 1ms by the SysTick interrupt.
- * We add the scheduler's systick call here to keep time.
+ * @brief Override HAL_IncTick to include scheduler timing.
+ *        Called every 1ms by the SysTick interrupt.
  */
 void HAL_IncTick(void)
 {
     uwTick += (uint32_t)uwTickFreq;
-    lelu_scheduler_systick();  /* Feed the scheduler */
+    lelu_scheduler_systick();
 }
 
 /* ============== Main Function ============== */
 
-/**
- * @brief Main function - initializes system and runs scheduler
- */
 int main(void)
 {
-    /* ========== MCU Initialization ========== */
     HAL_Init();
-    SystemClock_Config();     /* Configure system clock (user-defined) */
-    MX_GPIO_Init();           /* Initialize GPIOs (user-defined) */
-    MX_USART2_UART_Init();    /* Initialize UART for debug (user-defined) */
-    
-    /* ========== Initialize Scheduler ========== */
-    /* Pass UART handle for debug messages, or NULL to disable debug output */
-    lelu_scheduler_init(&huart2);
-    
-    /* ========== Register Tasks ========== */
-    uint8_t led1_task_id;
-    uint8_t led2_task_id;
-    
-    /* Task 1: Fast LED blink (250ms interval = 4 toggles/second = 2 Hz blink) */
-    lelu_scheduler_add_task("LED1_fast",    /* Task name (for debug) */
-                            task_blink_led1, /* Function to call */
-                            250,             /* Period in milliseconds */
-                            &led1_task_id);  /* Receives task ID */
-    
-    /* Task 2: Slow LED blink (1000ms interval = 1 toggle/second = 0.5 Hz blink) */
-    lelu_scheduler_add_task("LED2_slow", 
-                            task_blink_led2, 
-                            1000, 
-                            &led2_task_id);
-    
-    /* ========== Mark Boot Complete ========== */
-    /* This enables overrun detection - call after all setup is done */
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_USART2_UART_Init();
+
+    /* Initialize scheduler with UART debug output.
+     * Pass NULL instead to disable debug, or use a CDC callback. */
+    lelu_scheduler_init(scheduler_uart_print);
+
+    /* Register tasks */
+    lelu_scheduler_add_task("LED1_fast", task_blink_led1, 250,  NULL);
+    lelu_scheduler_add_task("LED2_slow", task_blink_led2, 1000, NULL);
+
     lelu_scheduler_set_boot_done();
-    
-    /* ========== Main Loop ========== */
+
+    /* Main loop */
     uint32_t loop_count = 0;
-    
+
     while (1)
     {
-        /* Run the scheduler - checks all tasks and executes ready ones */
         lelu_scheduler_run();
-        
-        /* Optional: Print statistics every ~10 seconds */
+
         loop_count++;
-        if (loop_count % 400 == 0)  /* 400 iterations * 25ms tick = 10 seconds */
+        if (loop_count % 400 == 0)
         {
             lelu_scheduler_print_stats();
         }
-        
-        /* Wait for next scheduler tick (saves power) */
+
         while (!lelu_scheduler_tick_pending())
         {
-            /* Enter low-power mode while waiting */
-            __WFI();  /* Wait For Interrupt - ARM instruction */
+            __WFI();
         }
-        
-        /* Clear the tick flag to acknowledge we processed it */
         lelu_scheduler_clear_tick();
     }
 }
@@ -122,34 +107,11 @@ int main(void)
 /* ============== Placeholder Functions ============== */
 /* 
  * These functions are board-specific and must be implemented by the user.
- * They are included here as placeholders to show what's needed.
+ * They are typically generated by STM32CubeMX.
  */
 
 /*
-void SystemClock_Config(void)
-{
-    // Configure system clock for your MCU
-    // Generated by STM32CubeMX
-}
-
-void MX_GPIO_Init(void)
-{
-    // Enable GPIO clocks
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    
-    // Configure LED1 (PA5) and LED2 (PA6) as outputs
-    GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_6;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-}
-
-void MX_USART2_UART_Init(void)
-{
-    // Configure UART for debug output
-    // Generated by STM32CubeMX
-}
+void SystemClock_Config(void) { ... }
+void MX_GPIO_Init(void) { ... }
+void MX_USART2_UART_Init(void) { ... }
 */

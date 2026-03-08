@@ -1,16 +1,19 @@
 /**
  * @file    lelu_scheduler.h
  * @brief   Lelu Scheduler - Simple cooperative task scheduler for STM32
- * @version 1.0.0
+ * @version 2.0.0
  * 
  * @details A lightweight, cooperative (non-preemptive) task scheduler designed
  *          for bare-metal STM32 applications. Tasks are executed based on their
  *          configured periods, with priority determined by registration order
  *          (first registered = highest priority).
  * 
+ *          Debug output is transport-agnostic: pass any print function (UART,
+ *          USB CDC, SWO, RTT, ...) or NULL to disable.
+ * 
  * @note    Compatible with STM32 HAL (F4, G0, and other families)
  * 
- * @example See lelu_scheduler_README.md for usage examples
+ * @example See README.md for usage examples
  */
 
 #ifndef LELU_SCHEDULER_H
@@ -31,7 +34,7 @@ extern "C" {
  * CONFIGURATION DEFINES
  * 
  * These can be overridden by defining them before including this header,
- * or in your project's compiler settings.
+ * or in your project's compiler settings (e.g. in main.h).
  * ========================================================================== */
 
 /**
@@ -86,6 +89,33 @@ extern "C" {
 typedef void (*lelu_task_func_t)(void);
 
 /**
+ * @brief Function pointer type for debug output
+ * 
+ * The scheduler calls this function to emit debug/diagnostic messages.
+ * The user provides an implementation that sends the string to their
+ * preferred output (UART, USB CDC, SWO, RTT, semihosting, etc.).
+ * 
+ * @param msg  Null-terminated string to output
+ * 
+ * @note  This is only called from main-loop context (never from ISR),
+ *        so it is safe to use blocking or buffered output functions.
+ * 
+ * Example implementations:
+ * @code
+ *   // UART output
+ *   void my_uart_print(const char* msg) {
+ *       HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+ *   }
+ *
+ *   // USB CDC (Virtual COM Port) output
+ *   void my_cdc_print(const char* msg) {
+ *       CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+ *   }
+ * @endcode
+ */
+typedef void (*lelu_print_func_t)(const char* msg);
+
+/**
  * @brief Task structure containing all task information
  */
 typedef struct {
@@ -106,7 +136,7 @@ typedef struct {
  */
 typedef struct {
     uint32_t         total_ticks;    /**< Total milliseconds spent executing task */
-    uint32_t         run_count;      /**< Number of times task has executed (reserved) */
+    uint32_t         run_count;      /**< Number of times task has executed */
 } lelu_task_stats_t;
 
 /**
@@ -127,14 +157,33 @@ typedef enum {
  * @brief  Initialize the scheduler
  * 
  * Must be called before any other scheduler functions. Initializes internal
- * state and optionally stores UART handle for debug output.
+ * state and optionally stores a print callback for debug output.
  * 
- * @param  uart_handle  Pointer to HAL UART handle for debug messages.
- *                      Pass NULL to disable debug output.
+ * @param  print_func  Function pointer for debug message output, or NULL
+ *                     to disable debug output. The function receives a
+ *                     null-terminated string. See @ref lelu_print_func_t
+ *                     for example implementations.
  * 
  * @note   Call this after HAL_Init() and peripheral initialization.
+ * 
+ * @code
+ *   // With USB CDC debug output
+ *   void my_cdc_print(const char* msg) {
+ *       CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+ *   }
+ *   lelu_scheduler_init(my_cdc_print);
+ *
+ *   // With UART debug output
+ *   void my_uart_print(const char* msg) {
+ *       HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+ *   }
+ *   lelu_scheduler_init(my_uart_print);
+ *
+ *   // No debug output
+ *   lelu_scheduler_init(NULL);
+ * @endcode
  */
-void lelu_scheduler_init(void* uart_handle);
+void lelu_scheduler_init(lelu_print_func_t print_func);
 
 /**
  * @brief  Mark boot sequence as complete
@@ -262,12 +311,13 @@ void lelu_scheduler_clear_tick(void);
 void lelu_scheduler_get_stats(uint8_t task_id, lelu_task_stats_t* stats);
 
 /**
- * @brief  Print statistics for all tasks via UART
+ * @brief  Print statistics for all tasks via the debug output callback
  * 
- * Outputs timing information for each registered task. Useful for
- * performance analysis and debugging.
+ * Outputs timing information for each registered task, including overrun
+ * count. Useful for performance analysis and debugging.
  * 
- * @note   Requires valid UART handle passed to lelu_scheduler_init().
+ * @note   Requires a valid print callback passed to lelu_scheduler_init().
+ *         Does nothing if no callback is set.
  */
 void lelu_scheduler_print_stats(void);
 
@@ -284,6 +334,17 @@ uint32_t lelu_scheduler_get_total_ticks(void);
  * @return Number of tasks (0 to LELU_MAX_TASKS)
  */
 uint8_t lelu_scheduler_get_task_count(void);
+
+/**
+ * @brief  Get number of tick overruns since boot
+ * 
+ * An overrun occurs when the previous tick was not processed before the
+ * next tick fires, meaning tasks are collectively taking longer than
+ * LELU_TICK_PERIOD_MS.
+ * 
+ * @return Number of overruns detected (saturates at UINT32_MAX)
+ */
+uint32_t lelu_scheduler_get_overrun_count(void);
 
 #ifdef __cplusplus
 }

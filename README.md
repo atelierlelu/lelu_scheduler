@@ -6,14 +6,15 @@ A simple, lightweight cooperative task scheduler for STM32 microcontrollers.
 
 ## Features
 
-- ✅ **Cooperative (non-preemptive) scheduling** - Tasks run to completion
-- ✅ **Configurable task periods** - Each task has its own execution interval
-- ✅ **Priority by registration order** - First registered = highest priority
-- ✅ **Task enable/disable** - Start and stop tasks at runtime
-- ✅ **Overrun detection** - Warns when tasks take too long
-- ✅ **Execution time profiling** - Track time spent in each task
-- ✅ **Debug output via UART** - Optional diagnostic messages
-- ✅ **STM32 HAL compatible** - Works with F4, G0, and other families
+- **Cooperative (non-preemptive) scheduling** - Tasks run to completion
+- **Configurable task periods** - Each task has its own execution interval
+- **Priority by registration order** - First registered = highest priority
+- **Task enable/disable** - Start and stop tasks at runtime
+- **Overrun detection** - Counts when tasks take too long
+- **Execution time profiling** - Track time spent in each task
+- **Transport-agnostic debug output** - Works with UART, USB CDC, SWO, RTT, or any print function
+- **STM32 HAL compatible** - Works with F4, G0, and other families
+- **No HAL module dependencies** - Only needs `main.h` for config defines
 
 ## Repository Structure
 
@@ -79,14 +80,38 @@ void HAL_IncTick(void)
 }
 ```
 
-### 3. Initialize and run
+### 3. Write a print function (optional)
+
+The scheduler accepts any print function for debug output. Choose the one
+that matches your hardware:
+
+```c
+/* Option A: USB CDC (Virtual COM Port) */
+#include "usbd_cdc_if.h"
+void my_cdc_print(const char* msg) {
+    CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+}
+
+/* Option B: UART */
+void my_uart_print(const char* msg) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+}
+
+/* Option C: No debug output - just pass NULL to init */
+```
+
+### 4. Initialize and run
 
 ```c
 #include "lelu_scheduler.h"
 
+void my_task(void) {
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+}
+
 // In main():
-lelu_scheduler_init(&huart2);  // Pass UART for debug, or NULL
-lelu_scheduler_add_task("myTask", my_handler, 100, NULL);
+lelu_scheduler_init(my_cdc_print);  // or my_uart_print, or NULL
+lelu_scheduler_add_task("blink", my_task, 500, NULL);
 lelu_scheduler_set_boot_done();
 
 while (1) {
@@ -98,9 +123,98 @@ while (1) {
 
 ---
 
+## Debug Output
+
+### How It Works
+
+The scheduler emits debug messages for task registration, boot status, and
+statistics. Instead of being tied to a specific peripheral (like UART), it
+calls a user-provided function pointer:
+
+```c
+typedef void (*lelu_print_func_t)(const char* msg);
+```
+
+You supply any function that takes a null-terminated string and sends it
+wherever you want. The scheduler only calls this from main-loop context
+(never from ISR), so it's safe to use blocking or buffered functions.
+
+### USB CDC Example (Full)
+
+```c
+#include "main.h"
+#include "usbd_cdc_if.h"
+#include "../lelu_scheduler/include/lelu_scheduler.h"
+
+extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+
+/** @brief Print callback for scheduler debug via USB Virtual COM Port */
+void scheduler_cdc_print(const char* msg)
+{
+    CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+}
+
+void task_blink(void) {
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_4);
+}
+
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_USB_DEVICE_Init();
+
+    lelu_scheduler_init(scheduler_cdc_print);
+    lelu_scheduler_add_task("blink", task_blink, 1000, NULL);
+    lelu_scheduler_set_boot_done();
+
+    while (1) {
+        lelu_scheduler_run();
+        while (!lelu_scheduler_tick_pending()) {}
+        lelu_scheduler_clear_tick();
+    }
+}
+```
+
+### UART Example (Full)
+
+```c
+#include "main.h"
+#include "../lelu_scheduler/include/lelu_scheduler.h"
+
+extern UART_HandleTypeDef huart2;
+
+/** @brief Print callback for scheduler debug via UART */
+void scheduler_uart_print(const char* msg)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+}
+
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_USART2_UART_Init();
+
+    lelu_scheduler_init(scheduler_uart_print);
+    lelu_scheduler_add_task("blink", task_blink, 500, NULL);
+    lelu_scheduler_set_boot_done();
+
+    while (1) {
+        lelu_scheduler_run();
+        while (!lelu_scheduler_tick_pending()) { __WFI(); }
+        lelu_scheduler_clear_tick();
+    }
+}
+```
+
+---
+
 ## Configuration
 
-Configuration is done via preprocessor defines. Define these **before** including `lelu_scheduler.h`, or in your compiler/project settings.
+Configuration is done via preprocessor defines. Define these **before** including `lelu_scheduler.h`, or in your compiler/project settings. The recommended place is `main.h` (inside a `USER CODE` block so CubeMX doesn't overwrite it).
 
 ### Available Defines
 
@@ -110,13 +224,12 @@ Configuration is done via preprocessor defines. Define these **before** includin
 | `LELU_TASK_NAME_LEN` | 20 | Maximum characters for task names (including null terminator). Used for debug output. |
 | `LELU_TICK_PERIOD_MS` | 25 | Base scheduler tick period in milliseconds. All task periods should ideally be multiples of this value. |
 
-### Example: Custom Configuration
+### Example: Custom Configuration in main.h
 
 ```c
-/* In main.c, BEFORE including lelu_scheduler.h */
-#define LELU_MAX_TASKS      4       /* Only need 4 tasks */
-#define LELU_TICK_PERIOD_MS 10      /* 10ms tick for finer resolution */
-#include "lelu_scheduler.h"
+/* In main.h, inside USER CODE Private defines */
+#define LELU_MAX_TASKS      10      /* Room for expansion */
+#define LELU_TICK_PERIOD_MS 20      /* 20ms = 50 Hz tick rate */
 ```
 
 ### Choosing LELU_TICK_PERIOD_MS
@@ -124,8 +237,8 @@ Configuration is done via preprocessor defines. Define these **before** includin
 The tick period determines the scheduler's time resolution. For best results:
 
 1. **Use the GCD** of all your task periods
-   - Tasks at 100ms and 500ms → use 100ms (or 50ms, 25ms, etc.)
-   - Tasks at 30ms and 50ms → use 10ms (GCD of 30 and 50)
+   - Tasks at 100ms and 500ms -> use 100ms (or 50ms, 25ms, etc.)
+   - Tasks at 30ms and 50ms -> use 10ms (GCD of 30 and 50)
 
 2. **Trade-offs:**
    - Lower values = more responsive, but more CPU overhead
@@ -138,88 +251,13 @@ The tick period determines the scheduler's time resolution. For best results:
 
 ---
 
-## Complete Blinky Example
-
-This example blinks two LEDs at different rates using the Lelu Scheduler.
-
-See [`examples/blinky_two_leds.c`](examples/blinky_two_leds.c) for the full source.
-
-### Hardware Setup
-
-- LED1 on PA5 (many Nucleo boards have this)
-- LED2 on PA6 (or any other available GPIO)
-
-### Code
-
-```c
-/* main.c - Two LED Blinky Example with Lelu Scheduler */
-
-#include "main.h"
-#include "lelu_scheduler.h"
-
-UART_HandleTypeDef huart2;
-
-/* Task Functions */
-void task_blink_led1(void) { HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); }
-void task_blink_led2(void) { HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_6); }
-
-/* HAL Tick Override */
-void HAL_IncTick(void)
-{
-    uwTick += (uint32_t)uwTickFreq;
-    lelu_scheduler_systick();
-}
-
-int main(void)
-{
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    MX_USART2_UART_Init();
-    
-    /* Initialize Scheduler */
-    lelu_scheduler_init(&huart2);
-    
-    /* Register Tasks */
-    lelu_scheduler_add_task("LED1_fast", task_blink_led1, 250, NULL);
-    lelu_scheduler_add_task("LED2_slow", task_blink_led2, 1000, NULL);
-    
-    lelu_scheduler_set_boot_done();
-    
-    /* Main Loop */
-    while (1)
-    {
-        lelu_scheduler_run();
-        while (!lelu_scheduler_tick_pending()) { __WFI(); }
-        lelu_scheduler_clear_tick();
-    }
-}
-```
-
-### Expected Output (UART @ 115200 baud)
-
-```
-[LELU] Scheduler initialized (max 8 tasks, 25ms tick)
-[LELU] Added task 'LED1_fast' (id=0, period=250ms)
-[LELU] Added task 'LED2_slow' (id=1, period=1000ms)
-[LELU] Boot done, scheduler active with 2 tasks
-```
-
-### Expected Behavior
-
-- LED1 toggles every 250ms (blinks at 2 Hz)
-- LED2 toggles every 1000ms (blinks at 0.5 Hz)
-- Both LEDs blink independently and continuously
-
----
-
 ## API Reference
 
 ### Initialization
 
 | Function | Description |
 |----------|-------------|
-| `lelu_scheduler_init(uart_handle)` | Initialize scheduler. Pass UART handle for debug, or NULL. |
+| `lelu_scheduler_init(print_func)` | Initialize scheduler. Pass a print callback for debug, or NULL. |
 | `lelu_scheduler_set_boot_done()` | Enable overrun detection. Call after all setup is complete. |
 
 ### Task Management
@@ -243,10 +281,11 @@ int main(void)
 
 | Function | Description |
 |----------|-------------|
-| `lelu_scheduler_print_stats()` | Print all task statistics via UART. |
+| `lelu_scheduler_print_stats()` | Print all task statistics via the print callback. |
 | `lelu_scheduler_get_stats(id, &stats)` | Get stats for a specific task. |
 | `lelu_scheduler_get_total_ticks()` | Get total ms elapsed since init. |
 | `lelu_scheduler_get_task_count()` | Get number of registered tasks. |
+| `lelu_scheduler_get_overrun_count()` | Get number of tick overruns since boot. |
 
 ---
 
@@ -258,6 +297,33 @@ int main(void)
 | `LELU_ERROR_FULL` | 1 | Cannot add task - array is full (increase `LELU_MAX_TASKS`) |
 | `LELU_ERROR_INVALID_ID` | 2 | Invalid task ID provided |
 | `LELU_ERROR_NULL_HANDLER` | 3 | NULL function pointer passed to `add_task` |
+
+---
+
+## Overrun Detection
+
+An overrun occurs when the scheduler tick fires before the previous tick was
+processed, meaning your tasks are collectively taking longer than
+`LELU_TICK_PERIOD_MS` to execute.
+
+Overruns are **counted** (not printed from ISR) for safety. Check them via:
+
+```c
+uint32_t overruns = lelu_scheduler_get_overrun_count();
+```
+
+Or see them in the stats output:
+
+```c
+lelu_scheduler_print_stats();
+// Output includes: [LELU] Task Statistics (uptime=1m23s, overruns=0)
+```
+
+**If overruns occur:**
+1. Check which task is slow using `lelu_scheduler_print_stats()`
+2. Optimize the slow task (remove delays, use DMA, etc.)
+3. Increase `LELU_TICK_PERIOD_MS` if timing allows
+4. Reduce task frequency
 
 ---
 
@@ -295,13 +361,6 @@ lelu_scheduler_add_task("button", check_button, 50, NULL);  /* Good */
 lelu_scheduler_add_task("button", check_button, 1, NULL);   /* Wasteful */
 ```
 
-### 3. Monitor for Overruns
-
-If you see `OR-` messages on UART, your tasks are taking too long. Either:
-- Optimize the slow task
-- Increase `LELU_TICK_PERIOD_MS`
-- Reduce task frequency
-
 ---
 
 ## Memory Usage
@@ -309,22 +368,50 @@ If you see `OR-` messages on UART, your tasks are taking too long. Either:
 | Component | Size |
 |-----------|------|
 | Per task | ~32 bytes |
-| Global state | ~16 bytes |
+| Global state | ~20 bytes |
 | Debug buffer | 128 bytes |
 | **Total (8 tasks)** | **~400 bytes** |
 
 ---
 
+## Migration from v1.x
+
+v2.0.0 replaces the UART handle parameter with a generic print callback:
+
+```c
+/* v1.x (old) */
+lelu_scheduler_init(&huart2);          // passed UART handle directly
+
+/* v2.0.0 (new) */
+void my_print(const char* msg) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+}
+lelu_scheduler_init(my_print);         // pass any print function
+
+/* Or with USB CDC */
+void my_cdc_print(const char* msg) {
+    CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+}
+lelu_scheduler_init(my_cdc_print);
+
+/* Or disable debug output entirely */
+lelu_scheduler_init(NULL);
+```
+
+Other changes:
+- Overrun messages are no longer printed from ISR context (safer). Use
+  `lelu_scheduler_get_overrun_count()` or `lelu_scheduler_print_stats()`.
+- `lelu_scheduler_print_stats()` now includes overrun count in the header.
+- No HAL peripheral modules required (UART HAL no longer needed).
+
+---
+
 ## Troubleshooting
 
-### "OR-" messages appearing
+### Build error: unknown type name 'UART_HandleTypeDef'
 
-**Cause:** Tasks are taking longer than `LELU_TICK_PERIOD_MS` to complete.
-
-**Solutions:**
-1. Check which task is slow using `lelu_scheduler_print_stats()`
-2. Optimize the slow task (remove delays, use DMA, etc.)
-3. Increase `LELU_TICK_PERIOD_MS` if timing allows
+You are using v1.x of the scheduler. Update to v2.0.0 which removed the
+direct UART dependency.
 
 ### Tasks not running
 
@@ -352,4 +439,5 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.0.0 | 2026 | **Breaking:** Replace UART handle with generic print callback. Add `lelu_scheduler_get_overrun_count()`. Remove ISR-context prints. |
 | 1.0.0 | 2025 | Initial release |
